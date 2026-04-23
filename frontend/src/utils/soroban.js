@@ -27,20 +27,48 @@ import {
 } from "@stellar/freighter-api";
 
 // -----------------------------------------------------
-// ⚙️ Environment Config (Edit your .env file accordingly)
+// ⚙️ Environment Config (SAFE VERSION)
 // -----------------------------------------------------
-const RPC_URL = import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org";
+
+const RPC_URL =
+  import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org";
+
 const NETWORK_PASSPHRASE =
-  import.meta.env.VITE_NETWORK_PASSPHRASE || Networks.TESTNET; // "Test SDF Network ; September 2015"
-const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ID;
+  import.meta.env.VITE_NETWORK_PASSPHRASE ||
+  "Test SDF Network ; September 2015";
+
+// 🔍 DEBUG LOGS (keep this for now)
+console.log("ENV CONTRACT ID:", import.meta.env.VITE_CONTRACT_ID);
+console.log("ENV RPC URL:", RPC_URL);
+console.log("ENV NETWORK:", NETWORK_PASSPHRASE);
+
+// 🧠 SAFE CONTRACT ID HANDLING
+const CONTRACT_ID_RAW = import.meta.env.VITE_CONTRACT_ID;
+
+if (!CONTRACT_ID_RAW || CONTRACT_ID_RAW.trim() === "") {
+  throw new Error(
+    "🚨 Contract ID is missing! Check your .env file and restart the server."
+  );
+}
+
+const CONTRACT_ID = CONTRACT_ID_RAW.trim();
 
 // -----------------------------------------------------
 // 🔗 Soroban Server & Contract Setup
 // -----------------------------------------------------
-const server = new rpc.Server(RPC_URL, { allowHttp: false });
-const contract = new Contract(CONTRACT_ID);
 
-// -----------------------------------------------------
+const server = new rpc.Server(RPC_URL, { allowHttp: false });
+
+// ✅ SAFE contract creation
+let contract;
+
+try {
+  contract = new Contract(CONTRACT_ID);
+  console.log("✅ Contract initialized:", CONTRACT_ID);
+} catch (err) {
+  console.error("❌ Invalid Contract ID:", CONTRACT_ID);
+  throw err;
+}
 // 🪪 Freighter Wallet Utilities
 // -----------------------------------------------------
 export async function getPublicKey() {
@@ -99,7 +127,7 @@ async function submitAndWait(signedXdr) {
   const { hash } = sendRes;
 
   // Poll until SUCCESS/FAILED
-  for (;;) {
+  for (; ;) {
     const res = await server.getTransaction(hash);
     if (res.status === "SUCCESS") return res;
     if (res.status === "FAILED") throw new Error("Transaction failed");
@@ -121,7 +149,7 @@ async function readContractData(scKey) {
     new xdr.LedgerKeyContractData({
       contract: Address.fromString(CONTRACT_ID).toScAddress(),
       key: scKey,
-      durability: xdr.ContractDataDurability.persistent(),
+      durability: xdr.ContractDataDurability.instance(),
     })
   );
   const ledgerKeyXDR = ledgerKey.toXDR("base64");

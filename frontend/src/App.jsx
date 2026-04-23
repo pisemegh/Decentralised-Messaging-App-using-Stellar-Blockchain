@@ -2,9 +2,6 @@
 // 🌟 Stellar Messenger DApp
 // Chat between two Freighter wallets (Niharika ↔ Isha)
 // ------------------------------------------------------------
-import CryptoJS from "crypto-js";
-import { pingOnChain } from "./utils/classic";
-
 import React, { useEffect, useRef, useState } from "react";
 import {
   MessageCircle,
