@@ -1,5 +1,5 @@
 // -----------------------------------------------------
-// 🌟 FINAL STABLE — Soroban Integration for React + Freighter (2025)
+// 🌟 Soroban Integration — supports Freighter + Demo Mode
 // -----------------------------------------------------
 
 // Polyfill Buffer for browser (stellar-sdk needs it)
@@ -10,6 +10,8 @@ if (!window.Buffer) window.Buffer = Buffer;
 import {
   Address,
   Contract,
+  Keypair,
+  Transaction,
   TransactionBuilder,
   BASE_FEE,
   Networks,
@@ -17,6 +19,7 @@ import {
   nativeToScVal,
   scValToNative,
   xdr,             // 👈 we’ll use this to read contract storage directly
+  authorizeEntry,
 } from "@stellar/stellar-sdk";
 
 import {
@@ -97,7 +100,24 @@ const toAddr = (pubKey) => Address.fromString(pubKey).toScVal();
 const u64 = (n) => nativeToScVal(n, { type: "u64" });
 const sstr = (s) => nativeToScVal(s, { type: "string" });
 
-// Build -> prepare (adds footprint/resources)
+// -----------------------------------------------------
+// 🔑 Demo Mode — sign with secret key directly (no Freighter)
+// -----------------------------------------------------
+let _demoKeypair = null;
+
+export function setDemoKeypair(secretKey) {
+  _demoKeypair = Keypair.fromSecret(secretKey);
+}
+
+export function getDemoPublicKey() {
+  return _demoKeypair?.publicKey() ?? null;
+}
+
+export function clearDemoKeypair() {
+  _demoKeypair = null;
+}
+
+// Build -> prepare. Returns a Transaction object (stellar-sdk v12)
 async function prepareInvokeTx(sourceAccount, op) {
   const tx = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
@@ -107,30 +127,55 @@ async function prepareInvokeTx(sourceAccount, op) {
     .setTimeout(30)
     .build();
 
-  // In new SDK, this returns a **prepared XDR string**, not a Transaction object
-  const preparedXdr = await server.prepareTransaction(tx);
-  return preparedXdr; // string
+  // server.prepareTransaction returns a Transaction object in sdk v12
+  return await server.prepareTransaction(tx);
 }
 
-// Ask Freighter to sign prepared XDR (string in, string out)
-async function signWithFreighter(preparedXdr) {
-  const { signedTxXdr, error } = await freighterSignTx(preparedXdr, {
+// Sign with demo keypair OR Freighter
+async function signTx(preparedTx) {
+  if (_demoKeypair) {
+    // Sign Soroban auth entries first (required by require_auth() in the contract)
+    try {
+      const latest = await server.getLatestLedger();
+      const validUntil = latest.sequence + 100;
+      for (const op of preparedTx.operations) {
+        if (op.auth && op.auth.length > 0) {
+          op.auth = await Promise.all(
+            op.auth.map((entry) =>
+              authorizeEntry(entry, _demoKeypair, validUntil, NETWORK_PASSPHRASE)
+            )
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("Soroban auth signing skipped:", e.message);
+    }
+    // Sign the transaction envelope
+    preparedTx.sign(_demoKeypair);
+    return preparedTx;
+  }
+  // Freighter mode: convert to XDR string
+  let xdrString;
+  try {
+    xdrString = preparedTx.toEnvelope().toXDR("base64");
+  } catch {
+    xdrString = preparedTx;
+  }
+  const { signedTxXdr, error } = await freighterSignTx(xdrString, {
     networkPassphrase: NETWORK_PASSPHRASE,
   });
   if (error) throw new Error(error?.message || "Freighter signing failed");
-  return signedTxXdr; // string
+  return signedTxXdr;
 }
 
-// Submit and poll result
-async function submitAndWait(signedXdr) {
-  const sendRes = await server.sendTransaction(signedXdr);
+// Submit and poll result — accepts Transaction object or XDR string
+async function submitAndWait(signedTx) {
+  const sendRes = await server.sendTransaction(signedTx);
   const { hash } = sendRes;
-
-  // Poll until SUCCESS/FAILED
-  for (; ;) {
+  for (;;) {
     const res = await server.getTransaction(hash);
     if (res.status === "SUCCESS") return res;
-    if (res.status === "FAILED") throw new Error("Transaction failed");
+    if (res.status === "FAILED") throw new Error("Transaction failed on-chain");
     await new Promise((r) => setTimeout(r, 1000));
   }
 }
@@ -171,13 +216,8 @@ export async function sendMessage(senderPubKey, receiverPubKey, encryptedContent
     sstr(encryptedContent)
   );
 
-  // returns prepared XDR (string)
   const preparedXdr = await prepareInvokeTx(account, op);
-
-  // sign XDR with Freighter
-  const signedXdr = await signWithFreighter(preparedXdr);
-
-  // submit and wait
+  const signedXdr = await signTx(preparedXdr);
   const res = await submitAndWait(signedXdr);
 
   // parse return value (u64 id) from resultXdr
@@ -223,11 +263,9 @@ export async function getMessage(msgId /*, userPubKey unused for read */) {
 export async function markAsRead(msgId, receiverPubKey) {
   const account = await loadAccount(receiverPubKey);
   const op = contract.call("mark_as_read", u64(msgId), toAddr(receiverPubKey));
-
   const preparedXdr = await prepareInvokeTx(account, op);
-  const signedXdr = await signWithFreighter(preparedXdr);
+  const signedXdr = await signTx(preparedXdr);
   const res = await submitAndWait(signedXdr);
-
   return { hash: res.hash };
 }
 
